@@ -50,23 +50,59 @@ fh.setFormatter(logging.Formatter(log_format))
 logging.getLogger().addHandler(fh)
 
 
+def parse_fvc_subject_id(filename):
+    """
+    Parse subject ID from various FVC filename formats:
+    
+    Format 1: fvcYYYY_DBID_SUBJECT_IMPRESSION.ext
+              e.g., fvc2002_1_101_3.tif → subject 101
+    
+    Format 2: SUBJECT_IMPRESSION.ext
+              e.g., 101_3.tif → subject 101
+    
+    Format 3: sXXX_Y.ext
+              e.g., s101_3.tif → subject 101
+    
+    Returns:
+        subject_id (int) or None if parsing fails
+    """
+    import re
+    
+    basename = os.path.basename(filename)
+    name = os.path.splitext(basename)[0]
+    
+    # Format 1: fvcYYYY_DBID_SUBJECT_IMPRESSION
+    pattern1 = r'^fvc(\d{4})_(\d)_(\d+)_(\d+)$'
+    match = re.match(pattern1, name)
+    if match:
+        return int(match.group(3))  # Return subject number
+    
+    # Format 2 & 3: [s]SUBJECT_IMPRESSION or just split by underscore
+    parts = name.split('_')
+    if len(parts) >= 2:
+        subject_str = parts[0].lstrip('s')
+        try:
+            return int(subject_str)
+        except ValueError:
+            pass
+    
+    return None
+
+
 class FVCDataset(Dataset):
     """
     FVC Dataset Loader
-    Expected structure:
-    data_root/
-        001_1.tif (subject 001, impression 1)
-        001_2.tif (subject 001, impression 2)
-        ...
-        002_1.tif (subject 002, impression 1)
-        ...
-    OR:
-    data_root/
-        subject_001/
-            impression_1.tif
-            impression_2.tif
-        subject_002/
-            ...
+    
+    Supports multiple filename formats:
+    
+    Format 1 (FVC merged): fvcYYYY_DBID_SUBJECT_IMPRESSION.ext
+        e.g., fvc2002_1_101_3.tif → subject 101
+        
+    Format 2 (Standard FVC): SUBJECT_IMPRESSION.ext
+        e.g., 101_3.tif → subject 101
+        
+    Format 3 (Subdirectories):
+        subject_001/impression_1.tif
     """
     def __init__(self, data_root, transform=None, split='train', train_ratio=0.8, seed=42):
         self.data_root = data_root
@@ -89,24 +125,18 @@ class FVCDataset(Dataset):
                 for img_path in image_files:
                     subject_to_images.setdefault(subject_idx, []).append(img_path)
         else:
-            # Flat structure - parse filenames (e.g., 001_1.tif, 001_2.tif)
+            # Flat structure - parse filenames using FVC parser
             subject_to_images = {}
             all_files = [f for f in os.listdir(data_root) 
                         if f.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'))]
             
             for img_file in sorted(all_files):
-                # Try to extract subject ID from filename
-                # Common patterns: 001_1.tif, s001_1.tif, 1_1.tif
-                basename = os.path.splitext(img_file)[0]
-                parts = basename.split('_')
-                if len(parts) >= 2:
-                    subject_id = parts[0].lstrip('s')  # Remove 's' prefix if exists
-                    try:
-                        subject_idx = int(subject_id)
-                        img_path = os.path.join(data_root, img_file)
-                        subject_to_images.setdefault(subject_idx, []).append(img_path)
-                    except ValueError:
-                        logging.warning(f"Could not parse subject ID from {img_file}")
+                subject_idx = parse_fvc_subject_id(img_file)
+                if subject_idx is not None:
+                    img_path = os.path.join(data_root, img_file)
+                    subject_to_images.setdefault(subject_idx, []).append(img_path)
+                else:
+                    logging.warning(f"Could not parse subject ID from {img_file}")
         
         # Split data into train/val
         np.random.seed(seed)
