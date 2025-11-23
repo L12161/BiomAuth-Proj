@@ -21,7 +21,7 @@ parser.add_argument('--weight_decay', type=float, default=1e-4, help='weight dec
 parser.add_argument('--save', type=str, default='./models_fvc', help='path for saving trained models')
 parser.add_argument('--data', type=str, required=True, help='path to FVC dataset root')
 parser.add_argument('--pretrained', type=str, required=True, help='path to ImageNet pretrained checkpoint')
-parser.add_argument('--num_classes', type=int, default=100, help='number of identities in dataset')
+parser.add_argument('--num_classes', type=int, default=None, help='number of identities (auto-detected if not specified)')
 parser.add_argument('--unfreeze_layers', type=int, default=1, 
                     help='layers to unfreeze: 0=only FC, 1=layer4+FC, 2=layer3+layer4+FC, 3=layer2+3+4+FC, 4=all')
 parser.add_argument('--model', type=str, default='birealnet18', choices=['birealnet18', 'birealnet34'])
@@ -142,6 +142,10 @@ class FVCDataset(Dataset):
         np.random.seed(seed)
         subject_ids = sorted(subject_to_images.keys())
         
+        # Create mapping from original subject IDs to consecutive labels (0 to N-1)
+        self.subject_id_to_label = {sid: idx for idx, sid in enumerate(subject_ids)}
+        self.num_classes = len(subject_ids)
+        
         for subject_idx in subject_ids:
             images = subject_to_images[subject_idx]
             if len(images) < 2:
@@ -157,10 +161,12 @@ class FVCDataset(Dataset):
             else:  # val
                 selected_images = images[n_train:]
             
+            # Use mapped label (consecutive 0 to N-1)
+            label = self.subject_id_to_label[subject_idx]
             for img_path in selected_images:
-                self.samples.append((img_path, subject_idx))
+                self.samples.append((img_path, label))
         
-        logging.info(f'{split.upper()}: Loaded {len(self.samples)} samples from {len(subject_ids)} subjects')
+        logging.info(f'{split.upper()}: Loaded {len(self.samples)} samples from {self.num_classes} subjects')
     
     def __len__(self):
         return len(self.samples)
@@ -420,6 +426,10 @@ def main():
     
     logging.info(f'Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}')
     
+    # Auto-detect num_classes if not specified
+    num_classes = args.num_classes if args.num_classes else train_dataset.num_classes
+    logging.info(f'Number of classes: {num_classes}' + (' (auto-detected)' if not args.num_classes else ''))
+    
     # Create model
     logging.info(f'Creating model: {args.model}')
     if args.model == 'birealnet18':
@@ -455,8 +465,8 @@ def main():
     model.load_state_dict(model_dict)
     
     # Replace FC layer for fingerprint dataset
-    logging.info(f'Replacing FC layer: 512 -> {args.num_classes}')
-    model.fc = nn.Linear(512, args.num_classes)
+    logging.info(f'Replacing FC layer: 512 -> {num_classes}')
+    model.fc = nn.Linear(512, num_classes)
     
     # Freeze layers according to transfer learning strategy
     freeze_layers(model, args.unfreeze_layers)
